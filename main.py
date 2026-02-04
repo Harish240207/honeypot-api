@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import Depends
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import os
@@ -94,7 +95,7 @@ async def safe_payload(request: Request):
 
 
 @app.post("/honeypot")
-async def honeypot_post(request: Request, ok: bool = verify_key_required):
+async def honeypot_post(request: Request, ok: bool = Depends(verify_key_required)):
     payload = await safe_payload(request)
 
     conversation_id = (
@@ -143,3 +144,4 @@ async def honeypot_post(request: Request, ok: bool = verify_key_required):
             "extracted_intelligence": intel
         }
     )
+
