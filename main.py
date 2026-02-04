@@ -22,45 +22,91 @@ def health():
 def pick_message(payload: dict) -> str:
     if not payload:
         return ""
-    for k in ["message", "text", "user_message", "msg", "input"]:
+
+    # common keys
+    for k in ["message", "text", "user_message", "msg", "input", "content"]:
         v = payload.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
+
+    # nested event object
     evt = payload.get("event")
     if isinstance(evt, dict):
-        v = evt.get("message") or evt.get("text")
-        if isinstance(v, str):
+        v = evt.get("message") or evt.get("text") or evt.get("content")
+        if isinstance(v, str) and v.strip():
             return v.strip()
+
     return ""
 
 
 def pick_conversation_id(payload: dict) -> str:
-    for k in ["conversation_id", "conversationId", "session_id", "sessionId", "id"]:
+    if not payload:
+        return str(uuid.uuid4())
+
+    for k in ["conversation_id", "conversationId", "session_id", "sessionId", "id", "thread_id"]:
         v = payload.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
+
     return str(uuid.uuid4())
 
 
-async def process_honeypot_request(request: Request):
-    payload = {}
+async def safe_get_payload(request: Request) -> dict:
+    """
+    This function ensures we never fail even if:
+    - empty body
+    - invalid json
+    - text body
+    - form-data
+    """
+    # 1) try JSON
     try:
-        payload = await request.json()
+        js = await request.json()
+        if isinstance(js, dict):
+            return js
+        # sometimes json is a list/string
+        return {"data": js}
     except Exception:
-        payload = {}
+        pass
+
+    # 2) try form-data
+    try:
+        form = await request.form()
+        if form:
+            return dict(form)
+    except Exception:
+        pass
+
+    # 3) try raw text
+    try:
+        body_bytes = await request.body()
+        if body_bytes:
+            txt = body_bytes.decode("utf-8", errors="ignore").strip()
+            if txt:
+                return {"text": txt}
+    except Exception:
+        pass
+
+    # 4) empty body
+    return {}
+
+
+async def process_request(request: Request):
+    payload = await safe_get_payload(request)
 
     conversation_id = pick_conversation_id(payload)
     session = get_session(conversation_id)
 
     msg = pick_message(payload)
 
-    # add scammer message
+    # if GUVI sends empty body, keep a default text to avoid detection crash
+    if not msg:
+        msg = "hello"
+
     session["history"].append({"role": "scammer", "text": msg})
 
-    # detection
     detection = detect_scam(msg)
 
-    # agent reply
     if detection["is_scam"]:
         agent_reply = generate_reply(session["history"])
     else:
@@ -88,17 +134,18 @@ async def process_honeypot_request(request: Request):
     }
 
 
-# ✅ Root endpoint (GUVI safe)
-@app.post("/")
-async def root_post(request: Request, ok: bool = Depends(verify_api_key)):
-    return await process_honeypot_request(request)
-
+# ✅ Support root path too
 @app.get("/")
 def root_get():
     return {"status": "ok", "message": "Honeypot service live"}
 
 
-# ✅ Main endpoint
+@app.post("/")
+async def root_post(request: Request, ok: bool = Depends(verify_api_key)):
+    return await process_request(request)
+
+
+# ✅ Main endpoint required by GUVI
 @app.post("/honeypot")
 async def honeypot(request: Request, ok: bool = Depends(verify_api_key)):
-    return await process_honeypot_request(request)
+    return await process_request(request)
