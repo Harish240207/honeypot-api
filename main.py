@@ -2,8 +2,8 @@ from fastapi import FastAPI, Request, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import os
-import time
 import uuid
+import time
 
 from app.detector import detect_scam
 from app.memory import get_session
@@ -14,7 +14,7 @@ load_dotenv()
 
 API_KEY = os.getenv("API_KEY", "harish_secret_key_123")
 
-app = FastAPI(title="Agentic Honeypot API", version="final")
+app = FastAPI(title="Agentic Honeypot API", version="1.0")
 
 
 def empty_intel():
@@ -64,7 +64,7 @@ async def safe_payload(request: Request):
     return {}
 
 
-# ✅ Root must support GET + HEAD + POST
+# ✅ ROOT: must be open for tester ping
 @app.get("/")
 def root_get():
     return {"status": True, "message": "Agentic Honeypot service is live"}
@@ -75,20 +75,15 @@ def root_head():
     return JSONResponse(status_code=200, content={})
 
 
-@app.post("/")
-async def root_post(request: Request, ok: bool = Depends(verify_key_required)):
-    # behave like honeypot POST
-    return await honeypot_post(request, ok=True)
-
-
 @app.get("/health")
 def health():
     return {"status": True, "message": "ok"}
 
 
-# ✅ /honeypot must support GET + HEAD without key
+# ✅ GUVI tester authentication check
+# MUST require key
 @app.get("/honeypot")
-def honeypot_get():
+def honeypot_get(ok: bool = Depends(verify_key_required)):
     return JSONResponse(status_code=200, content=make_basic_output())
 
 
@@ -97,6 +92,7 @@ def honeypot_head():
     return JSONResponse(status_code=200, content={})
 
 
+# ✅ Real evaluation endpoint
 @app.post("/honeypot")
 async def honeypot_post(request: Request, ok: bool = Depends(verify_key_required)):
     payload = await safe_payload(request)
@@ -110,7 +106,6 @@ async def honeypot_post(request: Request, ok: bool = Depends(verify_key_required
     )
 
     session = get_session(conversation_id)
-
     msg = payload.get("message") or payload.get("text") or payload.get("user_message") or "hello"
 
     session["history"].append({"role": "scammer", "text": msg})
