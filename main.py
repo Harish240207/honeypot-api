@@ -16,48 +16,35 @@ app = FastAPI(title="Agentic Honeypot API", version="1.0")
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": True, "message": "ok"}
 
 
 def pick_message(payload: dict) -> str:
     if not payload:
         return ""
-
     for k in ["message", "text", "user_message", "msg", "input", "content"]:
         v = payload.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
-
     evt = payload.get("event")
     if isinstance(evt, dict):
         v = evt.get("message") or evt.get("text") or evt.get("content")
         if isinstance(v, str) and v.strip():
             return v.strip()
-
     return ""
 
 
 def pick_conversation_id(payload: dict) -> str:
     if not payload:
         return str(uuid.uuid4())
-
     for k in ["conversation_id", "conversationId", "session_id", "sessionId", "id", "thread_id"]:
         v = payload.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
-
     return str(uuid.uuid4())
 
 
 async def safe_get_payload(request: Request) -> dict:
-    """
-    Accept ANY request body:
-    - JSON
-    - invalid JSON
-    - text
-    - form-data
-    - empty
-    """
     # JSON
     try:
         js = await request.json()
@@ -75,7 +62,7 @@ async def safe_get_payload(request: Request) -> dict:
     except Exception:
         pass
 
-    # raw body
+    # raw text
     try:
         body = await request.body()
         if body:
@@ -96,45 +83,6 @@ def empty_intel():
         "urls": [],
         "phone_numbers": []
     }
-
-
-def make_response(conversation_id, detection, agent_reply, intel, turns, duration):
-    """
-    ✅ Dual schema response.
-    This maximizes compatibility with GUVI strict validators.
-    """
-    scam_detected = detection["is_scam"]
-    risk_score = detection["risk_score"]
-    scam_type = detection["scam_type"]
-
-    # ✅ Your detailed response
-    detailed = {
-        "conversation_id": conversation_id,
-        "scam_detected": scam_detected,
-        "risk_score": risk_score,
-        "scam_type": scam_type,
-        "agent_reply": agent_reply,
-        "engagement_metrics": {
-            "turns": turns,
-            "duration_seconds": duration
-        },
-        "extracted_intelligence": intel
-    }
-
-    # ✅ GUVI-friendly generic response keys (extra)
-    guvi_min = {
-        "is_scam": scam_detected,
-        "confidence": risk_score,
-        "reply": agent_reply,
-        "metrics": {
-            "turns": turns,
-            "duration_seconds": duration
-        },
-        "intel": intel
-    }
-
-    # ✅ Merge both
-    return {**detailed, **guvi_min}
 
 
 async def process_request(request: Request):
@@ -164,13 +112,31 @@ async def process_request(request: Request):
     turns = len(session["history"])
     duration = int(time.time() - session["start_time"])
 
-    return make_response(conversation_id, detection, agent_reply, intel, turns, duration)
+    full_result = {
+        "conversation_id": conversation_id,
+        "scam_detected": detection["is_scam"],
+        "risk_score": detection["risk_score"],
+        "scam_type": detection["scam_type"],
+        "agent_reply": agent_reply,
+        "engagement_metrics": {
+            "turns": turns,
+            "duration_seconds": duration
+        },
+        "extracted_intelligence": intel
+    }
+
+    # ✅ GUVI TESTER SAFE RESPONSE FORMAT
+    return {
+        "status": True,
+        "message": "Honeypot endpoint working",
+        "result": full_result
+    }
 
 
-# Root endpoints
+# ✅ Root endpoints
 @app.get("/")
 def root_get():
-    return {"status": "ok", "message": "Honeypot service live"}
+    return {"status": True, "message": "Honeypot service live"}
 
 
 @app.post("/")
@@ -178,20 +144,25 @@ async def root_post(request: Request, ok: bool = Depends(verify_api_key)):
     return await process_request(request)
 
 
-# Honeypot endpoints
+# ✅ GET /honeypot for tester connectivity
 @app.get("/honeypot")
 def honeypot_get(ok: bool = Depends(verify_api_key)):
-    detection = {"is_scam": False, "risk_score": 0.0, "scam_type": "unknown"}
-    return make_response(
-        conversation_id=str(uuid.uuid4()),
-        detection=detection,
-        agent_reply="Hello! Please share the details.",
-        intel=empty_intel(),
-        turns=0,
-        duration=0
-    )
+    return {
+        "status": True,
+        "message": "Honeypot endpoint reachable",
+        "result": {
+            "conversation_id": str(uuid.uuid4()),
+            "scam_detected": False,
+            "risk_score": 0.0,
+            "scam_type": "unknown",
+            "agent_reply": "Hello! Please share the details.",
+            "engagement_metrics": {"turns": 0, "duration_seconds": 0},
+            "extracted_intelligence": empty_intel()
+        }
+    }
 
 
+# ✅ POST /honeypot main endpoint
 @app.post("/honeypot")
 async def honeypot_post(request: Request, ok: bool = Depends(verify_api_key)):
     return await process_request(request)
