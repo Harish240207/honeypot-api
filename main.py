@@ -1,5 +1,4 @@
-from fastapi import FastAPI, Request, Header, HTTPException
-from fastapi import Depends
+from fastapi import FastAPI, Request, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import os
@@ -28,29 +27,12 @@ def empty_intel():
     }
 
 
-# ✅ API key required only for POST
 def verify_key_required(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
     return True
 
 
-# ✅ ROOT: MUST support GET + HEAD (no key)
-@app.get("/")
-def root_get():
-    return {"status": True, "message": "Agentic Honeypot service is live"}
-
-@app.head("/")
-def root_head():
-    return JSONResponse(status_code=200, content={})
-
-
-@app.get("/health")
-def health():
-    return {"status": True, "message": "ok"}
-
-
-# ✅ honeypot basic output (for tester)
 def make_basic_output():
     return {
         "status": True,
@@ -65,25 +47,13 @@ def make_basic_output():
     }
 
 
-# ✅ IMPORTANT: /honeypot MUST support GET + HEAD without API KEY
-@app.get("/honeypot")
-def honeypot_get():
-    return JSONResponse(status_code=200, content=make_basic_output())
-
-@app.head("/honeypot")
-def honeypot_head():
-    return JSONResponse(status_code=200, content={})
-
-
 async def safe_payload(request: Request):
-    # Try json
     try:
         data = await request.json()
         return data if isinstance(data, dict) else {"data": data}
     except Exception:
         pass
 
-    # Try body text
     try:
         b = await request.body()
         if b:
@@ -92,6 +62,39 @@ async def safe_payload(request: Request):
         pass
 
     return {}
+
+
+# ✅ Root must support GET + HEAD + POST
+@app.get("/")
+def root_get():
+    return {"status": True, "message": "Agentic Honeypot service is live"}
+
+
+@app.head("/")
+def root_head():
+    return JSONResponse(status_code=200, content={})
+
+
+@app.post("/")
+async def root_post(request: Request, ok: bool = Depends(verify_key_required)):
+    # behave like honeypot POST
+    return await honeypot_post(request, ok=True)
+
+
+@app.get("/health")
+def health():
+    return {"status": True, "message": "ok"}
+
+
+# ✅ /honeypot must support GET + HEAD without key
+@app.get("/honeypot")
+def honeypot_get():
+    return JSONResponse(status_code=200, content=make_basic_output())
+
+
+@app.head("/honeypot")
+def honeypot_head():
+    return JSONResponse(status_code=200, content={})
 
 
 @app.post("/honeypot")
@@ -144,4 +147,3 @@ async def honeypot_post(request: Request, ok: bool = Depends(verify_key_required
             "extracted_intelligence": intel
         }
     )
-
