@@ -19,31 +19,15 @@ def health():
     return {"status": "ok"}
 
 
-# ✅ GUVI TESTER SAFE: GET /honeypot should work
-@app.get("/honeypot")
-def honeypot_get(ok: bool = Depends(verify_api_key)):
-    return {
-        "status": "success",
-        "code": 200,
-        "message": "Honeypot endpoint reachable",
-        "data": {
-            "scam_detected": False,
-            "agent_reply": "Hello, how can I help?"
-        }
-    }
-
-
 def pick_message(payload: dict) -> str:
     if not payload:
         return ""
 
-    # common keys
     for k in ["message", "text", "user_message", "msg", "input", "content"]:
         v = payload.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
 
-    # nested keys
     evt = payload.get("event")
     if isinstance(evt, dict):
         v = evt.get("message") or evt.get("text") or evt.get("content")
@@ -66,13 +50,6 @@ def pick_conversation_id(payload: dict) -> str:
 
 
 async def safe_get_payload(request: Request) -> dict:
-    """
-    Ensure we never fail even if:
-    - empty request body
-    - invalid json
-    - form-data
-    - text body
-    """
     # 1) Try JSON
     try:
         js = await request.json()
@@ -90,7 +67,7 @@ async def safe_get_payload(request: Request) -> dict:
     except Exception:
         pass
 
-    # 3) Try raw bytes -> text
+    # 3) Try raw text
     try:
         body = await request.body()
         if body:
@@ -103,6 +80,25 @@ async def safe_get_payload(request: Request) -> dict:
     return {}
 
 
+def minimal_output():
+    """If GU attaching empty/invalid body, still return valid required response schema."""
+    return {
+        "conversation_id": str(uuid.uuid4()),
+        "scam_detected": False,
+        "risk_score": 0.0,
+        "scam_type": "unknown",
+        "agent_reply": "Hello! Please share the details.",
+        "engagement_metrics": {"turns": 0, "duration_seconds": 0},
+        "extracted_intelligence": {
+            "upi_ids": [],
+            "bank_accounts": [],
+            "ifsc_codes": [],
+            "urls": [],
+            "phone_numbers": []
+        }
+    }
+
+
 async def process_request(request: Request):
     payload = await safe_get_payload(request)
 
@@ -111,17 +107,16 @@ async def process_request(request: Request):
 
     msg = pick_message(payload)
 
-    # If empty body, still respond safely
     if not msg:
         msg = "hello"
 
-    # Save scammer message
+    # store scammer msg
     session["history"].append({"role": "scammer", "text": msg})
 
-    # Scam detection
+    # detection
     detection = detect_scam(msg)
 
-    # Agent reply
+    # reply
     if detection["is_scam"]:
         agent_reply = generate_reply(session["history"])
     else:
@@ -129,15 +124,16 @@ async def process_request(request: Request):
 
     session["history"].append({"role": "agent", "text": agent_reply})
 
-    # Extract intel from full conversation
+    # extract intel
     full_text = " ".join([h.get("text", "") for h in session["history"]])
     intel = extract_intel(full_text)
 
-    # Metrics
+    # metrics
     turns = len(session["history"])
     duration = int(time.time() - session["start_time"])
 
-    output = {
+    # ✅ FLAT schema response
+    return {
         "conversation_id": conversation_id,
         "scam_detected": detection["is_scam"],
         "risk_score": detection["risk_score"],
@@ -150,16 +146,8 @@ async def process_request(request: Request):
         "extracted_intelligence": intel
     }
 
-    # ✅ GUVI-safe wrapper response
-    return {
-        "status": "success",
-        "code": 200,
-        "message": "Honeypot processed successfully",
-        "data": output
-    }
 
-
-# ✅ Root endpoints also supported
+# ✅ Root endpoints
 @app.get("/")
 def root_get():
     return {"status": "ok", "message": "Honeypot service live"}
@@ -170,7 +158,12 @@ async def root_post(request: Request, ok: bool = Depends(verify_api_key)):
     return await process_request(request)
 
 
-# ✅ POST /honeypot is main endpoint
+# ✅ GUVI tester may send GET/POST
+@app.get("/honeypot")
+def honeypot_get(ok: bool = Depends(verify_api_key)):
+    return minimal_output()
+
+
 @app.post("/honeypot")
 async def honeypot_post(request: Request, ok: bool = Depends(verify_api_key)):
     return await process_request(request)
