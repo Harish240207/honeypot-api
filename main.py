@@ -50,7 +50,15 @@ def pick_conversation_id(payload: dict) -> str:
 
 
 async def safe_get_payload(request: Request) -> dict:
-    # 1) Try JSON
+    """
+    Accept ANY request body:
+    - JSON
+    - invalid JSON
+    - text
+    - form-data
+    - empty
+    """
+    # JSON
     try:
         js = await request.json()
         if isinstance(js, dict):
@@ -59,7 +67,7 @@ async def safe_get_payload(request: Request) -> dict:
     except Exception:
         pass
 
-    # 2) Try form-data
+    # form-data
     try:
         form = await request.form()
         if form:
@@ -67,7 +75,7 @@ async def safe_get_payload(request: Request) -> dict:
     except Exception:
         pass
 
-    # 3) Try raw text
+    # raw body
     try:
         body = await request.body()
         if body:
@@ -80,23 +88,53 @@ async def safe_get_payload(request: Request) -> dict:
     return {}
 
 
-def minimal_output():
-    """If GU attaching empty/invalid body, still return valid required response schema."""
+def empty_intel():
     return {
-        "conversation_id": str(uuid.uuid4()),
-        "scam_detected": False,
-        "risk_score": 0.0,
-        "scam_type": "unknown",
-        "agent_reply": "Hello! Please share the details.",
-        "engagement_metrics": {"turns": 0, "duration_seconds": 0},
-        "extracted_intelligence": {
-            "upi_ids": [],
-            "bank_accounts": [],
-            "ifsc_codes": [],
-            "urls": [],
-            "phone_numbers": []
-        }
+        "upi_ids": [],
+        "bank_accounts": [],
+        "ifsc_codes": [],
+        "urls": [],
+        "phone_numbers": []
     }
+
+
+def make_response(conversation_id, detection, agent_reply, intel, turns, duration):
+    """
+    ✅ Dual schema response.
+    This maximizes compatibility with GUVI strict validators.
+    """
+    scam_detected = detection["is_scam"]
+    risk_score = detection["risk_score"]
+    scam_type = detection["scam_type"]
+
+    # ✅ Your detailed response
+    detailed = {
+        "conversation_id": conversation_id,
+        "scam_detected": scam_detected,
+        "risk_score": risk_score,
+        "scam_type": scam_type,
+        "agent_reply": agent_reply,
+        "engagement_metrics": {
+            "turns": turns,
+            "duration_seconds": duration
+        },
+        "extracted_intelligence": intel
+    }
+
+    # ✅ GUVI-friendly generic response keys (extra)
+    guvi_min = {
+        "is_scam": scam_detected,
+        "confidence": risk_score,
+        "reply": agent_reply,
+        "metrics": {
+            "turns": turns,
+            "duration_seconds": duration
+        },
+        "intel": intel
+    }
+
+    # ✅ Merge both
+    return {**detailed, **guvi_min}
 
 
 async def process_request(request: Request):
@@ -106,17 +144,13 @@ async def process_request(request: Request):
     session = get_session(conversation_id)
 
     msg = pick_message(payload)
-
     if not msg:
         msg = "hello"
 
-    # store scammer msg
     session["history"].append({"role": "scammer", "text": msg})
 
-    # detection
     detection = detect_scam(msg)
 
-    # reply
     if detection["is_scam"]:
         agent_reply = generate_reply(session["history"])
     else:
@@ -124,30 +158,16 @@ async def process_request(request: Request):
 
     session["history"].append({"role": "agent", "text": agent_reply})
 
-    # extract intel
     full_text = " ".join([h.get("text", "") for h in session["history"]])
-    intel = extract_intel(full_text)
+    intel = extract_intel(full_text) if full_text else empty_intel()
 
-    # metrics
     turns = len(session["history"])
     duration = int(time.time() - session["start_time"])
 
-    # ✅ FLAT schema response
-    return {
-        "conversation_id": conversation_id,
-        "scam_detected": detection["is_scam"],
-        "risk_score": detection["risk_score"],
-        "scam_type": detection["scam_type"],
-        "agent_reply": agent_reply,
-        "engagement_metrics": {
-            "turns": turns,
-            "duration_seconds": duration
-        },
-        "extracted_intelligence": intel
-    }
+    return make_response(conversation_id, detection, agent_reply, intel, turns, duration)
 
 
-# ✅ Root endpoints
+# Root endpoints
 @app.get("/")
 def root_get():
     return {"status": "ok", "message": "Honeypot service live"}
@@ -158,10 +178,18 @@ async def root_post(request: Request, ok: bool = Depends(verify_api_key)):
     return await process_request(request)
 
 
-# ✅ GUVI tester may send GET/POST
+# Honeypot endpoints
 @app.get("/honeypot")
 def honeypot_get(ok: bool = Depends(verify_api_key)):
-    return minimal_output()
+    detection = {"is_scam": False, "risk_score": 0.0, "scam_type": "unknown"}
+    return make_response(
+        conversation_id=str(uuid.uuid4()),
+        detection=detection,
+        agent_reply="Hello! Please share the details.",
+        intel=empty_intel(),
+        turns=0,
+        duration=0
+    )
 
 
 @app.post("/honeypot")
