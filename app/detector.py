@@ -1,48 +1,99 @@
 import re
+import json
 
-def scam_score(text: str) -> float:
-    text_l = (text or "").lower()
 
-    keywords = [
-        "upi", "account", "ifsc", "otp", "link", "verify", "verification",
-        "kyc", "payment", "refund", "blocked", "bank", "transaction",
-        "urgent", "click", "winner", "lottery", "parcel", "customs",
-        "fedex", "loan", "job", "telegram", "whatsapp", "pay now"
-    ]
+# ✅ Common scam patterns
+SCAM_KEYWORDS = [
+    "upi", "gpay", "phonepe", "paytm",
+    "otp", "verification code", "cvv",
+    "bank", "account", "ifsc",
+    "investment", "double your money", "loan",
+    "refund", "reward", "prize", "lottery",
+    "click link", "urgent", "limited time",
+    "kyc", "aadhaar", "pan",
+    "send money", "transfer", "payment",
+]
 
-    score = 0.0
-    for k in keywords:
-        if k in text_l:
-            score += 0.07
+SCAM_TYPES = {
+    "upi_fraud": ["upi", "gpay", "phonepe", "paytm"],
+    "otp_scam": ["otp", "verification code", "code"],
+    "banking_fraud": ["bank", "account", "ifsc", "cvv"],
+    "investment_scam": ["investment", "double your money", "profit"],
+    "refund_scam": ["refund", "reward", "prize", "lottery"],
+    "link_phishing": ["click link", "http", "www", ".com", ".in"],
+    "kyc_scam": ["kyc", "aadhaar", "pan"],
+}
 
-    if re.search(r"https?://\S+", text_l):
-        score += 0.30
 
-    if re.search(r"\b\d{9,18}\b", text_l):
-        score += 0.25
+def safe_text(value) -> str:
+    """
+    ✅ Converts ANY input into safe string.
+    Fixes crashes caused by dict/list/int inputs.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return str(value)
 
-    if "otp" in text_l and re.search(r"\b\d{4,8}\b", text_l):
-        score += 0.18
 
-    return min(score, 1.0)
+def scam_score(text) -> float:
+    """
+    ✅ Returns risk score between 0 and 1
+    """
+    text = safe_text(text).lower().strip()
 
-def detect_scam(text: str):
+    if not text:
+        return 0.0
+
+    score = 0
+
+    # Keyword match scoring
+    for keyword in SCAM_KEYWORDS:
+        if keyword in text:
+            score += 1
+
+    # Bonus score for suspicious patterns
+    upi_pattern = r"\b[a-zA-Z0-9.\-_]{3,}@[a-zA-Z]{2,}\b"
+    phone_pattern = r"\b[6-9]\d{9}\b"
+    url_pattern = r"(http[s]?://|www\.)"
+
+    if re.search(upi_pattern, text):
+        score += 2
+    if re.search(phone_pattern, text):
+        score += 1
+    if re.search(url_pattern, text):
+        score += 1
+
+    # normalize
+    normalized = min(score / 8, 1.0)
+    return round(normalized, 2)
+
+
+def detect_scam(message):
+    """
+    ✅ Safe scam detector function that never crashes
+    """
+    msg = safe_text(message)
+    text = msg.lower().strip()
+
     score = scam_score(text)
+
+    # scam threshold
     is_scam = score >= 0.35
 
-    t = (text or "").lower()
     scam_type = "unknown"
-    if "otp" in t:
-        scam_type = "otp_scam"
-    elif "upi" in t or "payment" in t:
-        scam_type = "upi_payment_scam"
-    elif "kyc" in t:
-        scam_type = "kyc_scam"
-    elif "http" in t or "link" in t:
-        scam_type = "phishing_link_scam"
+    if is_scam:
+        for t, keys in SCAM_TYPES.items():
+            if any(k in text for k in keys):
+                scam_type = t
+                break
 
     return {
         "is_scam": is_scam,
-        "risk_score": round(score, 2),
+        "risk_score": score,
         "scam_type": scam_type
     }
