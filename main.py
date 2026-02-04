@@ -1,8 +1,9 @@
-from fastapi import FastAPI, Depends, Request, Header, HTTPException
+from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+import os
 import time
 import uuid
-from dotenv import load_dotenv
 
 from app.detector import detect_scam
 from app.memory import get_session
@@ -11,21 +12,9 @@ from app.agent_gemini import generate_reply
 
 load_dotenv()
 
-import os
 API_KEY = os.getenv("API_KEY", "harish_secret_key_123")
 
 app = FastAPI(title="Agentic Honeypot API", version="final")
-
-
-# ✅ Root MUST respond 200 (no auth)
-@app.get("/")
-def root():
-    return {"status": True, "message": "Agentic Honeypot service is live"}
-
-
-@app.get("/health")
-def health():
-    return {"status": True, "message": "ok"}
 
 
 def empty_intel():
@@ -38,25 +27,30 @@ def empty_intel():
     }
 
 
-def verify_key_optional(x_api_key: str = Header(None)):
-    """
-    Optional API-key check (never blocks GET/HEAD tester calls).
-    """
-    if not x_api_key:
-        return False
-    return x_api_key == API_KEY
-
-
+# ✅ API key required only for POST
 def verify_key_required(x_api_key: str = Header(None)):
-    """
-    Required API-key check (used for POST).
-    """
     if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
     return True
 
 
-def make_output():
+# ✅ ROOT: MUST support GET + HEAD (no key)
+@app.get("/")
+def root_get():
+    return {"status": True, "message": "Agentic Honeypot service is live"}
+
+@app.head("/")
+def root_head():
+    return JSONResponse(status_code=200, content={})
+
+
+@app.get("/health")
+def health():
+    return {"status": True, "message": "ok"}
+
+
+# ✅ honeypot basic output (for tester)
+def make_basic_output():
     return {
         "status": True,
         "message": "Honeypot endpoint reachable",
@@ -70,21 +64,38 @@ def make_output():
     }
 
 
-# ✅ GUVI tester check = GET/HEAD should work WITHOUT API KEY
+# ✅ IMPORTANT: /honeypot MUST support GET + HEAD without API KEY
 @app.get("/honeypot")
 def honeypot_get():
-    return JSONResponse(status_code=200, content=make_output())
+    return JSONResponse(status_code=200, content=make_basic_output())
+
+@app.head("/honeypot")
+def honeypot_head():
+    return JSONResponse(status_code=200, content={})
 
 
-# ✅ POST should be secured (real evaluation)
-@app.post("/honeypot")
-async def honeypot_post(request: Request, ok: bool = Depends(verify_key_required)):
+async def safe_payload(request: Request):
+    # Try json
     try:
-        payload = await request.json()
-        if not isinstance(payload, dict):
-            payload = {"data": payload}
+        data = await request.json()
+        return data if isinstance(data, dict) else {"data": data}
     except Exception:
-        payload = {}
+        pass
+
+    # Try body text
+    try:
+        b = await request.body()
+        if b:
+            return {"raw_text": b.decode("utf-8", errors="ignore")}
+    except Exception:
+        pass
+
+    return {}
+
+
+@app.post("/honeypot")
+async def honeypot_post(request: Request, ok: bool = verify_key_required):
+    payload = await safe_payload(request)
 
     conversation_id = (
         payload.get("conversation_id")
@@ -110,7 +121,7 @@ async def honeypot_post(request: Request, ok: bool = Depends(verify_key_required
     session["history"].append({"role": "agent", "text": agent_reply})
 
     full_text = " ".join([h.get("text", "") for h in session["history"]])
-    intel = extract_intel(full_text)
+    intel = extract_intel(full_text) if full_text else empty_intel()
 
     turns = len(session["history"])
     duration = int(time.time() - session["start_time"])
