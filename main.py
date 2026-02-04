@@ -1,6 +1,4 @@
 from fastapi import FastAPI, Depends, Request
-from pydantic import BaseModel
-from typing import List, Dict, Optional, Any
 import time
 import uuid
 from dotenv import load_dotenv
@@ -16,56 +14,35 @@ load_dotenv()
 app = FastAPI(title="Agentic Honeypot API", version="1.0")
 
 
-# Optional schema (GUVI may not follow exactly)
-class HoneypotRequest(BaseModel):
-    conversation_id: Optional[str] = None
-    message: Optional[str] = None
-    history: Optional[List[Dict[str, str]]] = None
-    text: Optional[str] = None
-    user_message: Optional[str] = None
-
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-def pick_message(payload_dict: Dict[str, Any]) -> str:
-    """
-    GUVI / mock scammer might send different key names.
-    We accept many possibilities.
-    """
-    if not payload_dict:
+def pick_message(payload: dict) -> str:
+    if not payload:
         return ""
-
     for k in ["message", "text", "user_message", "msg", "input"]:
-        val = payload_dict.get(k)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-
-    # sometimes nested
-    evt = payload_dict.get("event")
+        v = payload.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    evt = payload.get("event")
     if isinstance(evt, dict):
-        val = evt.get("message") or evt.get("text")
-        if isinstance(val, str):
-            return val.strip()
-
+        v = evt.get("message") or evt.get("text")
+        if isinstance(v, str):
+            return v.strip()
     return ""
 
 
-def pick_conversation_id(payload_dict: Dict[str, Any]) -> str:
+def pick_conversation_id(payload: dict) -> str:
     for k in ["conversation_id", "conversationId", "session_id", "sessionId", "id"]:
-        val = payload_dict.get(k)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
+        v = payload.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
     return str(uuid.uuid4())
 
 
-@app.post("/honeypot")
-async def honeypot(request: Request, ok: bool = Depends(verify_api_key)):
-    """
-    Universal webhook to satisfy GUVI tester and mock scammer events.
-    """
+async def process_honeypot_request(request: Request):
     payload = {}
     try:
         payload = await request.json()
@@ -77,23 +54,20 @@ async def honeypot(request: Request, ok: bool = Depends(verify_api_key)):
 
     msg = pick_message(payload)
 
-    # store scammer message
-    if msg:
-        session["history"].append({"role": "scammer", "text": msg})
-    else:
-        session["history"].append({"role": "scammer", "text": ""})
+    # add scammer message
+    session["history"].append({"role": "scammer", "text": msg})
 
+    # detection
     detection = detect_scam(msg)
 
-    # agent handoff
+    # agent reply
     if detection["is_scam"]:
         agent_reply = generate_reply(session["history"])
     else:
-        agent_reply = "Okay. Can you share more details?"
+        agent_reply = "Okay. Please share more details."
 
     session["history"].append({"role": "agent", "text": agent_reply})
 
-    # extraction
     full_text = " ".join([h.get("text", "") for h in session["history"]])
     intel = extract_intel(full_text)
 
@@ -112,3 +86,19 @@ async def honeypot(request: Request, ok: bool = Depends(verify_api_key)):
         },
         "extracted_intelligence": intel
     }
+
+
+# ✅ Root endpoint (GUVI safe)
+@app.post("/")
+async def root_post(request: Request, ok: bool = Depends(verify_api_key)):
+    return await process_honeypot_request(request)
+
+@app.get("/")
+def root_get():
+    return {"status": "ok", "message": "Honeypot service live"}
+
+
+# ✅ Main endpoint
+@app.post("/honeypot")
+async def honeypot(request: Request, ok: bool = Depends(verify_api_key)):
+    return await process_honeypot_request(request)
