@@ -23,40 +23,57 @@ def health():
 @app.get("/honeypot")
 def honeypot_get(ok: bool = Depends(verify_api_key)):
     return {
-        "status": "ok",
+        "status": "success",
+        "code": 200,
         "message": "Honeypot endpoint reachable",
-        "scam_detected": False,
-        "agent_reply": "Hello, how can I help?"
+        "data": {
+            "scam_detected": False,
+            "agent_reply": "Hello, how can I help?"
+        }
     }
 
 
 def pick_message(payload: dict) -> str:
     if not payload:
         return ""
+
+    # common keys
     for k in ["message", "text", "user_message", "msg", "input", "content"]:
         v = payload.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
+
+    # nested keys
     evt = payload.get("event")
     if isinstance(evt, dict):
         v = evt.get("message") or evt.get("text") or evt.get("content")
         if isinstance(v, str) and v.strip():
             return v.strip()
+
     return ""
 
 
 def pick_conversation_id(payload: dict) -> str:
     if not payload:
         return str(uuid.uuid4())
+
     for k in ["conversation_id", "conversationId", "session_id", "sessionId", "id", "thread_id"]:
         v = payload.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
+
     return str(uuid.uuid4())
 
 
 async def safe_get_payload(request: Request) -> dict:
-    # Try JSON
+    """
+    Ensure we never fail even if:
+    - empty request body
+    - invalid json
+    - form-data
+    - text body
+    """
+    # 1) Try JSON
     try:
         js = await request.json()
         if isinstance(js, dict):
@@ -65,7 +82,7 @@ async def safe_get_payload(request: Request) -> dict:
     except Exception:
         pass
 
-    # Try form
+    # 2) Try form-data
     try:
         form = await request.form()
         if form:
@@ -73,7 +90,7 @@ async def safe_get_payload(request: Request) -> dict:
     except Exception:
         pass
 
-    # Try raw
+    # 3) Try raw bytes -> text
     try:
         body = await request.body()
         if body:
@@ -94,14 +111,17 @@ async def process_request(request: Request):
 
     msg = pick_message(payload)
 
-    # if empty body, still respond with safe value
+    # If empty body, still respond safely
     if not msg:
         msg = "hello"
 
+    # Save scammer message
     session["history"].append({"role": "scammer", "text": msg})
 
+    # Scam detection
     detection = detect_scam(msg)
 
+    # Agent reply
     if detection["is_scam"]:
         agent_reply = generate_reply(session["history"])
     else:
@@ -109,13 +129,15 @@ async def process_request(request: Request):
 
     session["history"].append({"role": "agent", "text": agent_reply})
 
+    # Extract intel from full conversation
     full_text = " ".join([h.get("text", "") for h in session["history"]])
     intel = extract_intel(full_text)
 
+    # Metrics
     turns = len(session["history"])
     duration = int(time.time() - session["start_time"])
 
-    return {
+    output = {
         "conversation_id": conversation_id,
         "scam_detected": detection["is_scam"],
         "risk_score": detection["risk_score"],
@@ -126,6 +148,14 @@ async def process_request(request: Request):
             "duration_seconds": duration
         },
         "extracted_intelligence": intel
+    }
+
+    # ✅ GUVI-safe wrapper response
+    return {
+        "status": "success",
+        "code": 200,
+        "message": "Honeypot processed successfully",
+        "data": output
     }
 
 
